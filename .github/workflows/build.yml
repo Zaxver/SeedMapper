@@ -3,6 +3,7 @@ on:
   push:
     branches:
       - master
+      - mc1.21.11-arm64
   pull_request:
     branches:
       - master
@@ -11,6 +12,7 @@ jobs:
   compile-cubiomes:
     name: Compile Cubiomes to shared library
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
@@ -20,13 +22,20 @@ jobs:
         with:
           submodules: 'true'
 
+      # Linux: x86-64 (libcubiomes_x86.so) + aarch64 (libcubiomes_arm.so)
       - name: Compile shared library (ubuntu-latest)
         if: matrix.os == 'ubuntu-latest'
         working-directory: src/main/c/cubiomes
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-          cmake --build build --config Release
-          cp build/libcubiomes.so ../../resources/libcubiomes.so
+          sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+          cmake -S . -B build-x86 -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-x86 --config Release
+          cp build-x86/libcubiomes.so ../../resources/libcubiomes_x86.so
+          cmake -S . -B build-arm -DCMAKE_BUILD_TYPE=Release -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=aarch64 -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc
+          cmake --build build-arm --config Release
+          cp build-arm/libcubiomes.so ../../resources/libcubiomes_arm.so
+
+      # macOS: universal (arm64 + x86_64) dylib
       - name: Compile shared library (macos-latest)
         if: matrix.os == 'macos-latest'
         working-directory: src/main/c/cubiomes
@@ -34,6 +43,8 @@ jobs:
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
           cmake --build build --config Release
           cp build/libcubiomes.dylib ../../resources/libcubiomes.dylib
+
+      # Windows: x86-64 required + aarch64 best-effort (MinGW cross)
       - name: Set up MSYS2 (windows-latest)
         if: matrix.os == 'windows-latest'
         uses: msys2/setup-msys2@v2
@@ -44,43 +55,68 @@ jobs:
             mingw-w64-x86_64-toolchain
             mingw-w64-x86_64-cmake
             mingw-w64-x86_64-ninja
-      - name: Compile shared library (windows-latest)
+            mingw-w64-cross-mingwarm64-gcc
+      - name: Compile shared library (windows-latest, x86-64)
         if: matrix.os == 'windows-latest'
         working-directory: src/main/c/cubiomes
         shell: msys2 {0}
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-          cmake --build build --config Release
-          cp build/cubiomes.dll ../../resources/cubiomes.dll
+          cmake -S . -B build-x86 -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-x86 --config Release
+          cp build-x86/cubiomes.dll ../../resources/cubiomes_x86.dll
+      - name: Compile shared library (windows-latest, aarch64)
+        if: matrix.os == 'windows-latest'
+        working-directory: src/main/c/cubiomes
+        shell: msys2 {0}
+        continue-on-error: true
+        run: |
+          cmake -S . -B build-arm -DCMAKE_BUILD_TYPE=Release -DCMAKE_SYSTEM_NAME=Windows -DCMAKE_SYSTEM_PROCESSOR=aarch64 -DCMAKE_C_COMPILER=/opt/bin/aarch64-w64-mingw32-gcc.exe
+          cmake --build build-arm --config Release
+          cp build-arm/cubiomes.dll ../../resources/cubiomes_arm.dll
 
       - name: Compute SHA256 hash (ubuntu-latest)
         if: matrix.os == 'ubuntu-latest'
-        run: sha256sum src/main/resources/libcubiomes.so
+        run: |
+          sha256sum src/main/resources/libcubiomes_x86.so
+          sha256sum src/main/resources/libcubiomes_arm.so
       - name: Compute SHA256 hash (macos-latest)
         if: matrix.os == 'macos-latest'
         run: shasum -a 256 src/main/resources/libcubiomes.dylib
-      - name: Compute SHA256 hash (windows-latest)
+      - name: Compute SHA256 hash (windows-latest, x86-64)
         if: matrix.os == 'windows-latest'
-        run: Get-FileHash -Algorithm SHA256 src/main/resources/cubiomes.dll
+        run: Get-FileHash -Algorithm SHA256 src/main/resources/cubiomes_x86.dll
+      - name: Compute SHA256 hash (windows-latest, aarch64)
+        if: matrix.os == 'windows-latest'
+        continue-on-error: true
+        run: Get-FileHash -Algorithm SHA256 src/main/resources/cubiomes_arm.dll
 
       - name: Capture shared library (ubuntu-latest)
         if: matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@v4
         with:
           name: libcubiomes.so
-          path: src/main/resources/libcubiomes.so
+          path: |
+            src/main/resources/libcubiomes_x86.so
+            src/main/resources/libcubiomes_arm.so
       - name: Capture shared library (macos-latest)
         if: matrix.os == 'macos-latest'
         uses: actions/upload-artifact@v4
         with:
           name: libcubiomes.dylib
           path: src/main/resources/libcubiomes.dylib
-      - name: Capture shared library (windows-latest)
+      - name: Capture shared library (windows-latest, x86-64)
         if: matrix.os == 'windows-latest'
         uses: actions/upload-artifact@v4
         with:
-          name: cubiomes.dll
-          path: src/main/resources/cubiomes.dll
+          name: cubiomes_x86.dll
+          path: src/main/resources/cubiomes_x86.dll
+      - name: Capture shared library (windows-latest, aarch64)
+        if: matrix.os == 'windows-latest'
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: cubiomes_arm.dll
+          path: src/main/resources/cubiomes_arm.dll
 
   build:
     name: Build SeedMapper
